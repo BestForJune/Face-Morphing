@@ -131,16 +131,17 @@ class Morpher:
             midtriangle = Triangle((1-alpha) * self.leftTriangles[i].vertices + alpha * self.rightTriangles[i].vertices)
             HFromLeft = MatrixH(self.leftTriangles[i].vertices, midtriangle.vertices)
             HFromright = MatrixH(self.rightTriangles[i].vertices, midtriangle.vertices)
+
             #OLD version: find out all points in the given triangle
             #midpoints = midtriangle.getPoints()
             #NEW version: generate a new image with the given triangle fill in with white color
-            #             use np.where to find out all the interger points within the triangle
+            #             use np.where to find out all the int points within the triangle
             tmpimag = Image.new('L', (self.rightImage.shape[1], self.rightImage.shape[0]), 0)
             pointsToBeFill = (tuple(midtriangle.vertices[0]),tuple(midtriangle.vertices[1]), tuple(midtriangle.vertices[2]))
             ImageDraw.Draw(tmpimag).polygon(pointsToBeFill, fill = 255, outline = 255)
+
             (indy, indx) = np.where(np.array(tmpimag) == 255)
             midpoints = np.concatenate((indx[None].T, indy[None].T), axis = 1)
-
             b = np.insert(midpoints,2,1,axis = 1).transpose()
             targetleft = np.matmul(HFromLeft, b).astype(int)
             targetright = np.matmul(HFromright, b).astype(int)
@@ -154,37 +155,86 @@ class Morpher:
             #   rval = self.rightImage[targetright[1][index],targetright[0][index]]
             #   midgraph[int(midpoints[index][1])][int(midpoints[index][0])] = np.float64(lval) * (1.0 - alpha) + np.float64(rval) * (alpha)
             #NEW version: solve everything above with a single function:)
-            lval = scipy.ndimage.map_coordinates(self.leftImage, [targetleft[1], targetleft[0]], order = 1)
-            rval = scipy.ndimage.map_coordinates(self.rightImage, [targetright[1], targetright[0]], order=1)
-            midgraph[indy, indx] = (1.0-alpha) * lval + alpha * rval
+            self.combineimage(midgraph, targetleft, targetright, indy, indx, alpha)
         return np.uint8(midgraph)
 
+    def combineimage(self, midgraph, targetleft, targetright, indy, indx, alpha):
+        lval = scipy.ndimage.map_coordinates(self.leftImage, [targetleft[1], targetleft[0]], order = 1)
+        rval = scipy.ndimage.map_coordinates(self.rightImage, [targetright[1], targetright[0]], order=1)
+        midgraph[indy, indx] = (1.0-alpha) * lval + alpha * rval
+        pass
+
     def saveVideo(self, targetFilePath, frameCount, frameRate, includeReversed):
-        image = []
+        #if not os.path.exists(targetFilePath):
+            #os.makedirs(targetFilePath)
         with tempfile.TemporaryDirectory(dir='/tmp/') as f:
             for i in range(0,frameCount + 1):
                 temp = self.getImageAtAlpha(i/frameCount)
-                imageio.imsave(f+str(i)+'.png',temp)
-                image.append(temp)
-
-            w = imageio.get_writer(targetFilePath, format = 'FFMPEG', mode = 'I', fps = frameRate)
+                imageio.imsave(f+'%03d'%(i)+'.png',temp)
+                if includeReversed:
+                    imageio.imsave(f + '%03d' % (2*frameCount-i) + '.png', temp)
+            os.system("ffmpeg -framerate {0} -i {1} {2}".format(frameRate, f+'%03d.png', targetFilePath))
             for i in range(0, frameCount + 1):
-                w.append_data(image[i])
-                os.remove(f+str(i)+'.png')
+                os.remove(f+'%03d'%(i)+'.png')
+                if includeReversed and i != 2*frameCount-i:
+                    os.remove(f + '%03d' % (2*frameCount-i) + '.png')
+    pass
+
+class ColorMorpher(Morpher):
+    def __init__(self, leftImage, leftTriangles, rightImage, rightTriangles):
+        super().__init__(leftImage, leftTriangles, rightImage, rightTriangles)
+
+    def getImageAtAlpha(self, alpha):
+        return super().getImageAtAlpha(alpha)
+
+    def combineimage(self, midgraph, targetleft, targetright, indy, indx, alpha):
+        lval = scipy.ndimage.map_coordinates(self.leftImage[:, :, 0], [targetleft[1], targetleft[0]], order=1)
+        rval = scipy.ndimage.map_coordinates(self.rightImage[:,:,0], [targetright[1], targetright[0]], order=1)
+        midgraph[indy, indx, np.zeros(len(indy), dtype=np.uint8)] = (1.0 - alpha) * lval + alpha * rval
+        lval = scipy.ndimage.map_coordinates(self.leftImage[:,:,1], [targetleft[1], targetleft[0]], order=1)
+        rval = scipy.ndimage.map_coordinates(self.rightImage[:,:,1], [targetright[1], targetright[0]], order=1)
+        midgraph[indy, indx, np.ones(len(indy), dtype=np.uint8)] = (1.0 - alpha) * lval + alpha * rval
+        lval = scipy.ndimage.map_coordinates(self.leftImage[:,:,2], [targetleft[1], targetleft[0]], order=1)
+        rval = scipy.ndimage.map_coordinates(self.rightImage[:,:,2], [targetright[1], targetright[0]], order=1)
+        midgraph[indy, indx, np.full(len(indy), 2, dtype=np.uint8)] = (1.0 - alpha) * lval + alpha * rval
+        pass
+
+    def saveVideo(self, targetFilePath, frameCount, frameRate, includeReversed):
+        super().saveVideo(targetFilePath, frameCount, frameRate, includeReversed)
     pass
 
 if __name__=='__main__':
     start = timeit.default_timer()
-    (starttri,endtri) = loadTriangles("points.left.txt","points.right.txt")
-    leftImage = imageio.imread('LeftGray.png')
-    rightImage = imageio.imread('RightGray.png')
-    morpher = Morpher(leftImage, starttri, rightImage, endtri)
-    #final = morpher.getImageAtAlpha(.1)
-    #stop = timeit.default_timer()
-    #print('Time: ', stop - start) #time for grey pic: 2.077s
-    #Image.fromarray(final).show()
+    # (starttri, endtri) = loadTriangles("points.left.txt", "points.right.txt")
+    # leftImage = imageio.imread('LeftGray.png')
+    # rightImage = imageio.imread('RightGray.png')
+    # morpher = Morpher(leftImage, starttri, rightImage, endtri)
+    # final = morpher.getImageAtAlpha(.75)
+    # stop = timeit.default_timer()
+    # print('Time: ', stop - start) #time for grey pic: 2.077s
+    # Image.fromarray(final).show()
+    #morpher.saveVideo("./Result/video.mp4", 15, 8, True)
 
-    morpher.saveVideo("/Result/", 10, 5, False)
+    # tmpimag = Image.new('L', (1440, 1080), 0)
+    # pointsToBeFill = (tuple([538.2, 541.9]), tuple([0.0, 540.0]), tuple([0.0, 1080.0]))
+    # ImageDraw.Draw(tmpimag).polygon(pointsToBeFill, fill=255, outline=255)
+    # tmpimag.show()
+
+    (starttri, endtri) = loadTriangles("points.source.txt", "points.dest.txt")
+    leftImage = imageio.imread('source.JPG')
+    rightImage = imageio.imread('dest.JPG')
+    colormorpher = ColorMorpher(leftImage, starttri, rightImage, endtri)
+    final = colormorpher.getImageAtAlpha(.1)
+    # Image.fromarray(final).show()
+    # stop = timeit.default_timer()
+    # print('Time: ', stop - start) #time for color pic: 4.161s
+    #colormorpher.saveVideo("./Result/video.mp4", 15, 8, True)
+
+    # (starttri, endtri) = loadTriangles("points.source.txt", "points.dest.txt")
+    # leftImage = imageio.imread('source.JPG')
+    # rightImage = imageio.imread('dest.JPG')
+    # colormorpher = ColorMorpher(leftImage, starttri, rightImage, endtri)
+    # colormorpher.saveVideo("./Result/video.mp4", 15, 8, True)
 
     stop = timeit.default_timer()
     print('Time: ', stop - start)
